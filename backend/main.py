@@ -32,7 +32,7 @@ def root():
     return {"message": "Doctor AI backend is working!"}
 
 
-@app.post("/chat")
+@app.post("/api/chat")
 def chat(message: str):
     response = client.responses.create(
         model="gpt-5-mini",
