@@ -45,6 +45,7 @@ class AIQuestion(BaseModel):
     question: str
     input_type: str
     options: Optional[list[str]] = None
+    assessment_complete: bool
 
 
 # Temporary conversation memory
@@ -118,19 +119,75 @@ def chat(message: str):
 
     - scale: Use for measurements such as pain severity from 0 to 10.
 
-    - single_choice: Use when the user should choose one answer from
-      a small set of options.
+    - single_choice: Use when the user should select exactly one
+      answer.
 
-    When using single_choice, generate a short list of relevant
-    options. Do not create unnecessary options.
+    - select_all: Use when multiple answers can apply at the same time.
+
+    When choosing between single_choice and select_all, consider
+    whether multiple answers could logically be true at once.
+
+    For example:
+    - "Where is the pain?" would usually use single_choice.
+    - "Which symptoms are you experiencing?" would usually use
+      select_all.
+
+    When using single_choice or select_all, generate a short list
+    of relevant options. Do not create unnecessary options.
+
+    If several options could apply simultaneously, use select_all
+    rather than single_choice.
+
+    Before choosing between single_choice and select_all, consider
+    whether multiple options can logically be true at the same time.
+
+    When conducting an assessment, you have two possible actions:
+
+    1. Ask another follow-up question if important information
+       is still missing.
+
+    2. End the questioning and provide a preliminary assessment
+       when you have enough relevant information.
+
+    Set "assessment_complete" to false when you need more information.
+
+    Set "assessment_complete" to true when you have enough information
+    to provide a useful preliminary assessment.
+
+    Do not continue asking questions unnecessarily once you have
+    enough information.
+
+    When assessment_complete is true:
+
+    - Give a concise summary of the symptoms reported.
+    - Explain that the result is a preliminary assessment, not a
+      definitive diagnosis.
+    - Do not claim certainty.
+    - Explain the most relevant possible explanations.
+    - Mention important information that remains uncertain.
+    - Clearly identify when professional medical evaluation may
+      be appropriate.
+
+    When assessment_complete is true, use "text" as the input_type
+    and set options to null.
 
     Always return the following JSON structure:
 
     {
-      "question": "your question",
-      "input_type": "text | scale | single_choice",
-      "options": ["option 1", "option 2"]
+      "question": "your question or assessment summary",
+      "input_type": "text | scale | single_choice | select_all",
+      "options": ["option 1", "option 2"],
+      "assessment_complete": false
     }
+
+    The input_type MUST be exactly ONE of these four values:
+
+    "text"
+    "scale"
+    "single_choice"
+    "select_all"
+
+    Never combine, concatenate, or modify these values.
 
     For "text" and "scale", set options to null.
 
@@ -142,6 +199,9 @@ def chat(message: str):
     Keep your responses concise and avoid overwhelming the user
     with large explanations before enough information has been
     collected.
+
+    Do not provide a long list of possible diagnoses before enough
+    information has been gathered.
     """
 
 
@@ -165,7 +225,7 @@ def chat(message: str):
                             "enum": [
                                 "text",
                                 "scale",
-                                "single_choice"
+                                "single_choice",
                                 "select_all"
                             ]
                         },
@@ -177,12 +237,16 @@ def chat(message: str):
                             "items": {
                                 "type": "string"
                             }
+                        },
+                        "assessment_complete": {
+                            "type": "boolean"
                         }
                     },
                     "required": [
                         "question",
                         "input_type",
-                        "options"
+                        "options",
+                        "assessment_complete"
                     ],
                     "additionalProperties": False
                 }
@@ -193,6 +257,19 @@ def chat(message: str):
 
     # Convert the AI's JSON text into a Python dictionary
     data = json.loads(response.output_text)
+
+
+    # Make sure the AI returned a valid input type
+    allowed_input_types = {
+        "text",
+        "scale",
+        "single_choice",
+        "select_all"
+    }
+
+    if data["input_type"] not in allowed_input_types:
+        data["input_type"] = "text"
+        data["options"] = None
 
 
     # Save the AI response in the conversation history
