@@ -17,6 +17,10 @@ function App() {
   // Stores the user's current answer
   const [selectedValue, setSelectedValue] = useState(null);
 
+  // Stores the latest assessment data received from the AI
+  // This now updates throughout the conversation.
+  const [assessment, setAssessment] = useState(null);
+
   const sendAnswer = async (answer) => {
     const trimmedAnswer = String(answer).trim();
 
@@ -24,7 +28,7 @@ function App() {
       return;
     }
 
-    // Add user's answer to the visible conversation
+    // Add the user's answer to the visible conversation
     setMessages((currentMessages) => [
       ...currentMessages,
       {
@@ -51,7 +55,41 @@ function App() {
 
       const data = await response.json();
 
-      // Add the AI's question to the visible conversation
+      /*
+       * Update the assessment whenever the backend gives us
+       * assessment information.
+       *
+       * This is the important change that allows the sidebar
+       * to evolve during the interview.
+       */
+      setAssessment((currentAssessment) => ({
+        summary: data.summary ?? currentAssessment?.summary ?? null,
+        possibilities:
+          data.possibilities ?? currentAssessment?.possibilities ?? [],
+        urgency: data.urgency ?? currentAssessment?.urgency ?? null,
+      }));
+
+      /*
+       * If the assessment is complete, save the final assessment
+       * and stop asking follow-up questions.
+       */
+      if (data.assessment_complete) {
+        setAssessment(data);
+
+        setMessages((currentMessages) => [
+          ...currentMessages,
+          {
+            role: "ai",
+            text: "I've gathered enough information to provide a preliminary assessment.",
+          },
+        ]);
+
+        return;
+      }
+
+      /*
+       * Otherwise, this is another follow-up question.
+       */
       setMessages((currentMessages) => [
         ...currentMessages,
         {
@@ -63,6 +101,7 @@ function App() {
       // Save the question information so we can render
       // the appropriate UI component
       setCurrentQuestion(data);
+
     } catch (error) {
       console.error("Error contacting backend:", error);
 
@@ -210,18 +249,22 @@ function App() {
       return (
         <div className="interactive-input">
           <div className="choice-list">
-            {currentQuestion.options?.map((option) => (
-              <label key={option} className="choice-option">
-                <input
-                  type="checkbox"
-                  value={option}
-                  checked={selectedOptions.includes(option)}
-                  onChange={() => handleSelectAll(option)}
-                />
+            {currentQuestion.options?.map((option) => {
+              const isSelected = selectedOptions.includes(option);
 
-                <span>{option}</span>
-              </label>
-            ))}
+              return (
+                <label key={option} className="choice-option">
+                  <input
+                    type="checkbox"
+                    value={option}
+                    checked={isSelected}
+                    onChange={() => handleSelectAll(option)}
+                  />
+
+                  <span>{option}</span>
+                </label>
+              );
+            })}
           </div>
 
           <button
@@ -249,13 +292,16 @@ function App() {
           onChange={(event) => setMessage(event.target.value)}
         />
 
-        <button type="submit">Send</button>
+        <button type="submit">
+          Send
+        </button>
       </form>
     );
   };
 
   return (
     <div className="app">
+
       <header className="header">
         <div>
           <h1>Doctor AI</h1>
@@ -263,50 +309,232 @@ function App() {
         </div>
       </header>
 
-      <main className="chat-container">
-        <div className="welcome-message">
-          <h2>How are you feeling?</h2>
+      <div className="app-layout">
 
-          <p>
-            Describe your symptoms and I'll ask questions to better
-            understand what's going on.
-          </p>
-        </div>
+        {/* ========================= */}
+        {/* LEFT: CHAT                 */}
+        {/* ========================= */}
 
-        <div className="messages">
-          {messages.map((msg, index) => (
-            <div
-              key={index}
-              className={`message ${
-                msg.role === "user" ? "user-message" : "ai-message"
-              }`}
-            >
-              <strong>
-                {msg.role === "user" ? "You" : "Doctor AI"}
-              </strong>
+        <main className="chat-container">
 
-              <p>{msg.text}</p>
-            </div>
-          ))}
-        </div>
-      </main>
+          <div className="welcome-message">
+            <h2>How are you feeling?</h2>
+
+            <p>
+              Describe your symptoms and I'll ask questions to better
+              understand what's going on.
+            </p>
+          </div>
+
+          <div className="messages">
+            {messages.map((msg, index) => (
+              <div
+                key={index}
+                className={`message ${
+                  msg.role === "user"
+                    ? "user-message"
+                    : "ai-message"
+                }`}
+              >
+                <strong>
+                  {msg.role === "user"
+                    ? "You"
+                    : "Doctor AI"}
+                </strong>
+
+                <p>{msg.text}</p>
+              </div>
+            ))}
+          </div>
+
+        </main>
+
+
+        {/* ========================= */}
+        {/* RIGHT: ASSESSMENT          */}
+        {/* ========================= */}
+
+        <aside className="assessment-sidebar">
+
+          <h2>Assessment</h2>
+
+          {!assessment ? (
+
+            <p className="assessment-placeholder">
+              As you answer questions, your assessment will appear here.
+            </p>
+
+          ) : (
+
+            <>
+
+              {/* Summary */}
+
+              {assessment.summary && (
+                <section className="assessment-section">
+
+                  <h3>Summary</h3>
+
+                  <p>
+                    {assessment.summary}
+                  </p>
+
+                </section>
+              )}
+
+
+              {/* Possible explanations */}
+
+              {assessment.possibilities?.length > 0 && (
+                <section className="assessment-section">
+
+                  <h3>Possible explanations</h3>
+
+                  {assessment.possibilities.map(
+                    (possibility, index) => (
+
+                      <div
+                        key={index}
+                        className={`possibility ${possibility.status}`}
+                      >
+
+                        <div className="possibility-header">
+
+                          <strong>
+                            {possibility.name}
+                          </strong>
+
+                          <span>
+                            {possibility.status === "more_consistent"
+                              ? "More consistent"
+                              : possibility.status === "possible"
+                              ? "Possible"
+                              : "Less consistent"}
+                          </span>
+
+                        </div>
+
+                        <p>
+                          {possibility.reason}
+                        </p>
+
+                      </div>
+
+                    )
+                  )}
+
+                </section>
+              )}
+
+
+              {/* Urgency */}
+
+              {assessment.urgency && (
+                <section className="assessment-section">
+
+                  <h3>Urgency</h3>
+
+                  <div
+                    className={`urgency ${assessment.urgency.level}`}
+                  >
+
+                    <strong>
+                      {assessment.urgency.level === "routine"
+                        ? "Routine"
+                        : assessment.urgency.level === "contact_clinician"
+                        ? "Contact a healthcare professional"
+                        : "Urgent"}
+                    </strong>
+
+                    <p>
+                      {assessment.urgency.reason}
+                    </p>
+
+                  </div>
+
+                </section>
+              )}
+
+            </>
+
+          )}
+
+        </aside>
+
+      </div>
+
+
+      {/* ========================= */}
+      {/* INPUT AREA                 */}
+      {/* ========================= */}
 
       {currentQuestion ? (
+
         <div className="question-area">
           {renderInput()}
         </div>
-      ) : (
-        <form className="input-area" onSubmit={handleSubmit}>
+
+      ) : !assessment || !assessment.possibilities?.length ? (
+
+        <form
+          className="input-area"
+          onSubmit={handleSubmit}
+        >
+
           <input
             type="text"
             placeholder="Describe your symptoms..."
             value={message}
-            onChange={(event) => setMessage(event.target.value)}
+            onChange={(event) =>
+              setMessage(event.target.value)
+            }
           />
 
-          <button type="submit">Send</button>
+          <button type="submit">
+            Send
+          </button>
+
         </form>
+
+      ) : currentQuestion ? (
+
+        <div className="question-area">
+          {renderInput()}
+        </div>
+
+      ) : !assessment ? (
+
+        <form
+          className="input-area"
+          onSubmit={handleSubmit}
+        >
+
+          <input
+            type="text"
+            placeholder="Describe your symptoms..."
+            value={message}
+            onChange={(event) =>
+              setMessage(event.target.value)
+            }
+          />
+
+          <button type="submit">
+            Send
+          </button>
+
+        </form>
+
+      ) : (
+
+        <div className="completed-message">
+          <p>
+            Assessment complete. You can start a new conversation
+            when you're ready.
+          </p>
+        </div>
+
       )}
+
     </div>
   );
 }
