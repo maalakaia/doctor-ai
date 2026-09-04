@@ -18,17 +18,19 @@ function App() {
   const [selectedValue, setSelectedValue] = useState(null);
 
   // Stores the latest assessment data received from the AI
-  // This now updates throughout the conversation.
   const [assessment, setAssessment] = useState(null);
+
+  // Tracks whether the AI is currently responding
+  const [isLoading, setIsLoading] = useState(false);
 
   const sendAnswer = async (answer) => {
     const trimmedAnswer = String(answer).trim();
 
-    if (!trimmedAnswer) {
+    if (!trimmedAnswer || isLoading) {
       return;
     }
 
-    // Add the user's answer to the visible conversation
+    // Show the user's answer in the conversation
     setMessages((currentMessages) => [
       ...currentMessages,
       {
@@ -40,6 +42,9 @@ function App() {
     // Clear the current interactive question
     setCurrentQuestion(null);
     setSelectedValue(null);
+
+    // Show loading state
+    setIsLoading(true);
 
     try {
       const response = await fetch(
@@ -56,26 +61,26 @@ function App() {
       const data = await response.json();
 
       /*
-       * Update the assessment whenever the backend gives us
-       * assessment information.
-       *
-       * This is the important change that allows the sidebar
-       * to evolve during the interview.
+       * Update the assessment after every AI response.
+       * This allows the sidebar to evolve throughout
+       * the interview instead of only appearing at the end.
        */
       setAssessment((currentAssessment) => ({
         summary: data.summary ?? currentAssessment?.summary ?? null,
         possibilities:
           data.possibilities ?? currentAssessment?.possibilities ?? [],
         urgency: data.urgency ?? currentAssessment?.urgency ?? null,
+        assessment_complete:
+          data.assessment_complete ??
+          currentAssessment?.assessment_complete ??
+          false,
       }));
 
       /*
-       * If the assessment is complete, save the final assessment
-       * and stop asking follow-up questions.
+       * If the assessment is complete, show the completion
+       * message and stop asking follow-up questions.
        */
       if (data.assessment_complete) {
-        setAssessment(data);
-
         setMessages((currentMessages) => [
           ...currentMessages,
           {
@@ -88,7 +93,7 @@ function App() {
       }
 
       /*
-       * Otherwise, this is another follow-up question.
+       * Otherwise, show the next question.
        */
       setMessages((currentMessages) => [
         ...currentMessages,
@@ -98,8 +103,7 @@ function App() {
         },
       ]);
 
-      // Save the question information so we can render
-      // the appropriate UI component
+      // Save the question so the correct input control can be rendered
       setCurrentQuestion(data);
 
     } catch (error) {
@@ -112,6 +116,9 @@ function App() {
           text: "Sorry, I couldn't connect to the server.",
         },
       ]);
+    } finally {
+      // Always stop the loading state when the request finishes
+      setIsLoading(false);
     }
   };
 
@@ -172,8 +179,6 @@ function App() {
 
     /*
      * SCALE
-     * Example:
-     * "How severe is your pain?"
      */
     if (currentQuestion.input_type === "scale") {
       return (
@@ -203,8 +208,6 @@ function App() {
 
     /*
      * SINGLE CHOICE
-     * Example:
-     * "Where does the pain occur?"
      */
     if (currentQuestion.input_type === "single_choice") {
       return (
@@ -228,7 +231,7 @@ function App() {
           <button
             type="button"
             onClick={handleContinue}
-            disabled={!selectedValue}
+            disabled={!selectedValue || isLoading}
           >
             Continue
           </button>
@@ -238,8 +241,6 @@ function App() {
 
     /*
      * SELECT ALL
-     * Example:
-     * "Which symptoms are you experiencing?"
      */
     if (currentQuestion.input_type === "select_all") {
       const selectedOptions = Array.isArray(selectedValue)
@@ -270,7 +271,7 @@ function App() {
           <button
             type="button"
             onClick={handleContinue}
-            disabled={selectedOptions.length === 0}
+            disabled={selectedOptions.length === 0 || isLoading}
           >
             Continue
           </button>
@@ -280,8 +281,6 @@ function App() {
 
     /*
      * TEXT
-     * Used when the user needs to explain something
-     * in their own words.
      */
     return (
       <form className="input-area" onSubmit={handleSubmit}>
@@ -289,11 +288,12 @@ function App() {
           type="text"
           placeholder="Type your answer..."
           value={message}
+          disabled={isLoading}
           onChange={(event) => setMessage(event.target.value)}
         />
 
-        <button type="submit">
-          Send
+        <button type="submit" disabled={isLoading}>
+          {isLoading ? "Thinking..." : "Send"}
         </button>
       </form>
     );
@@ -357,6 +357,12 @@ function App() {
         <aside className="assessment-sidebar">
 
           <h2>Assessment</h2>
+
+          {isLoading && (
+            <p className="assessment-loading">
+              Analyzing your latest answer...
+            </p>
+          )}
 
           {!assessment ? (
 
@@ -474,57 +480,7 @@ function App() {
           {renderInput()}
         </div>
 
-      ) : !assessment || !assessment.possibilities?.length ? (
-
-        <form
-          className="input-area"
-          onSubmit={handleSubmit}
-        >
-
-          <input
-            type="text"
-            placeholder="Describe your symptoms..."
-            value={message}
-            onChange={(event) =>
-              setMessage(event.target.value)
-            }
-          />
-
-          <button type="submit">
-            Send
-          </button>
-
-        </form>
-
-      ) : currentQuestion ? (
-
-        <div className="question-area">
-          {renderInput()}
-        </div>
-
-      ) : !assessment ? (
-
-        <form
-          className="input-area"
-          onSubmit={handleSubmit}
-        >
-
-          <input
-            type="text"
-            placeholder="Describe your symptoms..."
-            value={message}
-            onChange={(event) =>
-              setMessage(event.target.value)
-            }
-          />
-
-          <button type="submit">
-            Send
-          </button>
-
-        </form>
-
-      ) : (
+      ) : assessment?.assessment_complete ? (
 
         <div className="completed-message">
           <p>
@@ -532,6 +488,29 @@ function App() {
             when you're ready.
           </p>
         </div>
+
+      ) : (
+
+        <form
+          className="input-area"
+          onSubmit={handleSubmit}
+        >
+
+          <input
+            type="text"
+            placeholder="Describe your symptoms..."
+            value={message}
+            disabled={isLoading}
+            onChange={(event) =>
+              setMessage(event.target.value)
+            }
+          />
+
+          <button type="submit" disabled={isLoading}>
+            {isLoading ? "Thinking..." : "Send"}
+          </button>
+
+        </form>
 
       )}
 
