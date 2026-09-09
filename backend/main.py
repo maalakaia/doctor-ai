@@ -1,25 +1,311 @@
 import os
 import json
+import sqlite3
+import uuid
+
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
 
 # Load environment variables from backend/.env
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 
-# Create FastAPI app
+# ============================================================
+# DATABASE
+# ============================================================
+
+# SQLite database will be stored inside the backend folder.
+DATABASE_PATH = BASE_DIR / "doctor_ai.db"
+
+
+def get_db_connection():
+    """
+    Create a connection to the SQLite database.
+
+    row_factory allows rows to be accessed like dictionaries.
+    """
+    connection = sqlite3.connect(DATABASE_PATH)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def initialize_database():
+    """
+    Create database tables if they do not already exist.
+    """
+
+    connection = get_db_connection()
+
+    # Stores one row for every conversation.
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conversations (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    # Stores every message belonging to a conversation.
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (conversation_id)
+                REFERENCES conversations(id)
+        )
+        """
+    )
+
+    connection.commit()
+    connection.close()
+
+
+# Create the database/tables when the backend starts.
+initialize_database()
+
+
+# ============================================================
+# DATABASE HELPER FUNCTIONS
+# ============================================================
+
+def create_new_conversation(title="New conversation"):
+    """
+    Create a new conversation and return its ID.
+    """
+
+    conversation_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    connection = get_db_connection()
+
+    connection.execute(
+        """
+        INSERT INTO conversations (
+            id,
+            title,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            conversation_id,
+            title,
+            now,
+            now,
+        ),
+    )
+
+    connection.commit()
+    connection.close()
+
+    return conversation_id
+
+
+def generate_conversation_title(message: str):
+    """
+    Generate a short conversation title from the user's first message.
+    """
+
+    text = message.lower().strip()
+
+    symptom_titles = [
+        ("headache", "Headache"),
+        ("migraine", "Migraine"),
+        ("stomach", "Stomach pain"),
+        ("abdominal pain", "Stomach pain"),
+        ("nausea", "Nausea"),
+        ("vomiting", "Vomiting"),
+        ("cough", "Cough"),
+        ("fever", "Fever"),
+        ("sore throat", "Sore throat"),
+        ("back pain", "Back pain"),
+        ("chest pain", "Chest pain"),
+        ("dizzy", "Dizziness"),
+        ("dizziness", "Dizziness"),
+        ("rash", "Rash"),
+        ("fatigue", "Fatigue"),
+        ("shortness of breath", "Breathing problem"),
+        ("stomach ache", "Stomach pain"),
+        ("diarrhea", "Diarrhea"),
+        ("constipation", "Constipation"),
+        ("ear pain", "Ear pain"),
+        ("tooth pain", "Tooth pain"),
+    ]
+
+    for keyword, title in symptom_titles:
+        if keyword in text:
+            return title
+
+    return "Health assessment"
+
+
+def update_conversation_title(conversation_id, title):
+    """
+    Update the title of a conversation.
+    """
+
+    connection = get_db_connection()
+
+    connection.execute(
+        """
+        UPDATE conversations
+        SET title = ?
+        WHERE id = ?
+        """,
+        (
+            title,
+            conversation_id,
+        ),
+    )
+
+    connection.commit()
+    connection.close()
+
+
+def conversation_exists(conversation_id):
+    """
+    Check whether a conversation exists.
+    """
+
+    connection = get_db_connection()
+
+    row = connection.execute(
+        """
+        SELECT id
+        FROM conversations
+        WHERE id = ?
+        """,
+        (conversation_id,),
+    ).fetchone()
+
+    connection.close()
+
+    return row is not None
+
+
+def get_conversation_messages(conversation_id):
+    """
+    Load all messages belonging to one conversation
+    in chronological order.
+    """
+
+    connection = get_db_connection()
+
+    rows = connection.execute(
+        """
+        SELECT role, content
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY id ASC
+        """,
+        (conversation_id,),
+    ).fetchall()
+
+    connection.close()
+
+    return [dict(row) for row in rows]
+
+
+def save_message(conversation_id, role, content):
+    """
+    Save a message and update the conversation timestamp.
+    """
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    connection = get_db_connection()
+
+    connection.execute(
+        """
+        INSERT INTO messages (
+            conversation_id,
+            role,
+            content,
+            created_at
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            conversation_id,
+            role,
+            content,
+            now,
+        ),
+    )
+
+    connection.execute(
+        """
+        UPDATE conversations
+        SET updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            now,
+            conversation_id,
+        ),
+    )
+
+    connection.commit()
+    connection.close()
+
+
+def get_conversation(conversation_id):
+    """
+    Get the metadata for one conversation.
+    """
+
+    connection = get_db_connection()
+
+    row = connection.execute(
+        """
+        SELECT
+            id,
+            title,
+            created_at,
+            updated_at
+        FROM conversations
+        WHERE id = ?
+        """,
+        (conversation_id,),
+    ).fetchone()
+
+    connection.close()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+# ============================================================
+# FASTAPI APP
+# ============================================================
+
 app = FastAPI()
 
 
-# Allow the React frontend to communicate with the backend
+# Allow the React frontend to communicate with the backend.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -29,31 +315,39 @@ app.add_middleware(
 )
 
 
-# Get OpenAI API key
+# ============================================================
+# OPENAI
+# ============================================================
+
+# Get OpenAI API key.
 api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key:
     raise RuntimeError("OPENAI_API_KEY is not set.")
 
 
-# Create OpenAI client
+# Create OpenAI client.
 client = OpenAI(api_key=api_key)
 
 
-# Describes a possible explanation for the user's symptoms
+# ============================================================
+# RESPONSE MODELS
+# ============================================================
+
+# Describes a possible explanation for the user's symptoms.
 class Possibility(BaseModel):
     name: str
     status: str
     reason: str
 
 
-# Describes the urgency of the situation
+# Describes the urgency of the situation.
 class Urgency(BaseModel):
     level: str
     reason: str
 
 
-# Describes the structured response returned by the AI
+# Describes the structured response returned by the AI.
 class AIResponse(BaseModel):
     question: Optional[str] = None
     input_type: Optional[str] = None
@@ -64,27 +358,161 @@ class AIResponse(BaseModel):
     urgency: Optional[Urgency] = None
 
 
-# Temporary conversation memory
-# We will replace this with a database later.
-conversation_history = []
-
+# ============================================================
+# BASIC ROUTE
+# ============================================================
 
 @app.get("/")
 def root():
     return {"message": "Doctor AI backend is working!"}
 
 
-@app.post("/api/chat")
-def chat(message: str):
+# ============================================================
+# CREATE NEW CONVERSATION
+# ============================================================
 
-    # Save the user's message
+@app.post("/api/conversations")
+def create_conversation():
+    """
+    Create a brand-new conversation.
+    """
+
+    conversation_id = create_new_conversation()
+
+    conversation = get_conversation(conversation_id)
+
+    return conversation
+
+
+# ============================================================
+# GET CONVERSATION HISTORY
+# ============================================================
+
+@app.get("/api/conversations")
+def get_conversations():
+    """
+    Return all saved conversations, newest first.
+
+    This will eventually populate the Chat History
+    section of the left sidebar.
+    """
+
+    connection = get_db_connection()
+
+    rows = connection.execute(
+        """
+        SELECT
+            id,
+            title,
+            created_at,
+            updated_at
+        FROM conversations
+        ORDER BY updated_at DESC
+        """
+    ).fetchall()
+
+    connection.close()
+
+    return [dict(row) for row in rows]
+
+
+# ============================================================
+# GET ONE CONVERSATION
+# ============================================================
+
+@app.get("/api/conversations/{conversation_id}")
+def get_one_conversation(conversation_id: str):
+    """
+    Return one conversation and all of its messages.
+    """
+
+    conversation = get_conversation(conversation_id)
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    messages = get_conversation_messages(conversation_id)
+
+    return {
+        **conversation,
+        "messages": messages,
+    }
+
+
+# ============================================================
+# CHAT
+# ============================================================
+
+@app.post("/api/chat")
+def chat(
+    message: str,
+    conversation_id: Optional[str] = None,
+):
+
+    # ========================================================
+    # GET OR CREATE CONVERSATION
+    # ========================================================
+
+    # If no conversation ID was provided,
+    # create a new conversation automatically.
+    if conversation_id is None:
+        conversation_id = create_new_conversation()
+
+    # If an ID was provided, make sure it exists.
+    elif not conversation_exists(conversation_id):
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+
+    # ========================================================
+    # LOAD THIS CONVERSATION'S HISTORY
+    # ========================================================
+
+    conversation_history = get_conversation_messages(
+        conversation_id
+    )
+
+
+    # ========================================================
+    # GENERATE TITLE FOR FIRST MESSAGE
+    # ========================================================
+
+    # If this is the first message in the conversation,
+    # generate a short title based on what the user described.
+    if len(conversation_history) == 0:
+        title = generate_conversation_title(message)
+
+        update_conversation_title(
+            conversation_id,
+            title,
+        )
+
+
+    # ========================================================
+    # SAVE USER MESSAGE
+    # ========================================================
+
     conversation_history.append({
         "role": "user",
-        "content": message
+        "content": message,
     })
 
+    save_message(
+        conversation_id,
+        "user",
+        message,
+    )
 
-    # Instructions that control how Doctor AI behaves
+
+    # ========================================================
+    # AI INSTRUCTIONS
+    # ========================================================
+
     instructions = """
     You are Doctor AI, a health assessment assistant.
 
@@ -485,9 +913,12 @@ def chat(message: str):
     """
 
 
-    # Send the conversation history to the AI
+    # ========================================================
+    # SEND CONVERSATION TO AI
+    # ========================================================
+
     response = client.responses.create(
-        model="gpt-5-mini",
+        model="gpt-5.6-luna",
         instructions=instructions,
         input=conversation_history,
         text={
@@ -496,7 +927,9 @@ def chat(message: str):
                 "name": "ai_assessment",
                 "schema": {
                     "type": "object",
+
                     "properties": {
+
                         "question": {
                             "type": [
                                 "string",
@@ -541,9 +974,12 @@ def chat(message: str):
 
                         "possibilities": {
                             "type": "array",
+
                             "items": {
                                 "type": "object",
+
                                 "properties": {
+
                                     "name": {
                                         "type": "string"
                                     },
@@ -577,7 +1013,9 @@ def chat(message: str):
                                 "object",
                                 "null"
                             ],
+
                             "properties": {
+
                                 "level": {
                                     "type": "string",
                                     "enum": [
@@ -618,21 +1056,25 @@ def chat(message: str):
     )
 
 
-    # Convert the AI's JSON text into a Python dictionary
+    # ========================================================
+    # PROCESS AI RESPONSE
+    # ========================================================
+
+    # Convert the AI's JSON text into a Python dictionary.
     data = json.loads(response.output_text)
 
 
-    # Make sure possibilities is always a list
+    # Make sure possibilities is always a list.
     if not isinstance(data.get("possibilities"), list):
         data["possibilities"] = []
 
 
-    # Limit the number of possibilities shown
+    # Limit the number of possibilities shown.
     if len(data["possibilities"]) > 4:
         data["possibilities"] = data["possibilities"][:4]
 
 
-    # Make sure the AI returned a valid input type
+    # Make sure the AI returned a valid input type.
     allowed_input_types = {
         "text",
         "scale",
@@ -648,7 +1090,7 @@ def chat(message: str):
         data["options"] = None
 
 
-    # Make sure urgency has a valid level
+    # Make sure urgency has a valid level.
     if data.get("urgency") is not None:
 
         allowed_urgency_levels = {
@@ -658,6 +1100,7 @@ def chat(message: str):
         }
 
         if data["urgency"].get("level") not in allowed_urgency_levels:
+
             data["urgency"] = {
                 "level": "contact_clinician",
                 "reason": (
@@ -667,24 +1110,41 @@ def chat(message: str):
             }
 
 
-    # Make sure incomplete assessments have no summary
+    # Make sure incomplete assessments have no summary.
     if not data["assessment_complete"]:
         data["summary"] = None
 
 
-    # Make sure completed assessments don't contain a question UI
+    # Make sure completed assessments don't contain a question UI.
     if data["assessment_complete"]:
         data["question"] = None
         data["input_type"] = None
         data["options"] = None
 
 
-    # Save the AI response in the conversation history
-    conversation_history.append({
-        "role": "assistant",
-        "content": response.output_text
-    })
+    # ========================================================
+    # SAVE AI RESPONSE
+    # ========================================================
+
+    # Save the user-visible AI message rather than the raw JSON.
+    if data["assessment_complete"]:
+        assistant_message = (
+            "I've gathered enough information to provide a preliminary assessment."
+        )
+    else:
+        assistant_message = data["question"] or ""
+
+    save_message(
+        conversation_id,
+        "assistant",
+        assistant_message,
+    )
 
 
-    # Send the structured response back to React
+    # ========================================================
+    # RETURN TO REACT
+    # ========================================================
+
+    data["conversation_id"] = conversation_id
+
     return data
