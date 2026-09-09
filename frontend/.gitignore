@@ -1,4 +1,7 @@
 # Logs
+# Local SQLite database
+backend/doctor_ai.db
+
 logs
 *.log
 npm-debug.log*
